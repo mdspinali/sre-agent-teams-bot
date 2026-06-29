@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.log
+appPackage/*.zip
+appPackage/manifest.json
+deploy/
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+
+# Local/personal artifacts (never tracked)
+AGENTS.md
+webapp_logs.zip
+docs/superpowers/
+docs/sre-agent-teams-bridge-fixes-findings.md

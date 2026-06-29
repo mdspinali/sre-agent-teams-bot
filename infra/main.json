@@ -1,0 +1,239 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "15442967972716833418"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "centralus"
+    },
+    "appName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 40
+    },
+    "botDisplayName": {
+      "type": "string",
+      "defaultValue": "SRE Agent Teams Bridge"
+    },
+    "botMicrosoftAppId": {
+      "type": "string"
+    },
+    "botMicrosoftAppPassword": {
+      "type": "securestring"
+    },
+    "sreAgentEndpoint": {
+      "type": "string"
+    },
+    "sreAgentScope": {
+      "type": "string",
+      "defaultValue": "https://azuresre.dev/.default"
+    }
+  },
+  "variables": {
+    "storageName": "[take(replace(toLower(format('{0}st', parameters('appName'))), '-', ''), 24)]",
+    "tableName": "TeamsSreThreads",
+    "appServicePlanName": "[format('{0}-plan', parameters('appName'))]",
+    "appInsightsName": "[format('{0}-appi', parameters('appName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "B1",
+        "tier": "Basic",
+        "capacity": 1
+      },
+      "kind": "linux",
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "allowBlobPublicAccess": false,
+        "publicNetworkAccess": "Enabled",
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', variables('tableName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', variables('storageName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[parameters('appName')]",
+      "location": "[parameters('location')]",
+      "kind": "app,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "NODE|20-lts",
+          "appCommandLine": "npm start",
+          "alwaysOn": true,
+          "appSettings": [
+            {
+              "name": "PORT",
+              "value": "8080"
+            },
+            {
+              "name": "MicrosoftAppId",
+              "value": "[parameters('botMicrosoftAppId')]"
+            },
+            {
+              "name": "MicrosoftAppPassword",
+              "value": "[parameters('botMicrosoftAppPassword')]"
+            },
+            {
+              "name": "MicrosoftAppType",
+              "value": "SingleTenant"
+            },
+            {
+              "name": "MicrosoftAppTenantId",
+              "value": "[subscription().tenantId]"
+            },
+            {
+              "name": "SRE_AGENT_ENDPOINT",
+              "value": "[parameters('sreAgentEndpoint')]"
+            },
+            {
+              "name": "SRE_AGENT_SCOPE",
+              "value": "[parameters('sreAgentScope')]"
+            },
+            {
+              "name": "THREAD_TABLE_ENDPOINT",
+              "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').primaryEndpoints.table]"
+            },
+            {
+              "name": "THREAD_TABLE_NAME",
+              "value": "[variables('tableName')]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.Web/sites', parameters('appName')), 'Storage Table Data Contributor')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.BotService/botServices",
+      "apiVersion": "2022-09-15",
+      "name": "[parameters('appName')]",
+      "location": "global",
+      "kind": "azurebot",
+      "sku": {
+        "name": "F0"
+      },
+      "properties": {
+        "displayName": "[parameters('botDisplayName')]",
+        "endpoint": "[format('https://{0}/api/messages', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]",
+        "msaAppId": "[parameters('botMicrosoftAppId')]",
+        "msaAppTenantId": "[subscription().tenantId]",
+        "msaAppType": "SingleTenant"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.BotService/botServices/channels",
+      "apiVersion": "2022-09-15",
+      "name": "[format('{0}/{1}', parameters('appName'), 'MsTeamsChannel')]",
+      "location": "global",
+      "properties": {
+        "channelName": "MsTeamsChannel"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.BotService/botServices', parameters('appName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "appServiceUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]"
+    },
+    "botMessagingEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}/api/messages', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]"
+    },
+    "tableEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').primaryEndpoints.table]"
+    },
+    "appServicePrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]"
+    }
+  }
+}

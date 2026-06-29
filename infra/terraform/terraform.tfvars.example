@@ -1,0 +1,7 @@
+# Bridge configuration. Copy to terraform.tfvars and fill in.
+subscription_id       = "<your-subscription-id>"
+app_name              = "<unique-app-name>"
+bot_app_id            = "<bot-entra-app-id>"
+bot_app_secret        = "<bot-entra-app-secret>"
+sre_agent_endpoint    = "https://<your-sre-agent>.<region>.azuresre.ai"
+sre_agent_resource_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/agents/<agent>"

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "0.2.0",
+  "id": "${TEAMS_APP_ID}",
+  "developer": {
+    "name": "${DEVELOPER_NAME}",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "name": {
+    "short": "SRE Agent",
+    "full": "Azure SRE Agent"
+  },
+  "description": {
+    "short": "Chat with Azure SRE Agent.",
+    "full": "Personal Teams chat surface for Azure SRE Agent through an Azure-hosted bot bridge."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#6264A7",
+  "bots": [
+    {
+      "botId": "${BOT_MICROSOFT_APP_ID}",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["${APP_SERVICE_HOSTNAME}", "token.botframework.com"],
+  "webApplicationInfo": {
+    "id": "${BOT_MICROSOFT_APP_ID}",
+    "resource": "api://botid-${BOT_MICROSOFT_APP_ID}"
+  }
+}
