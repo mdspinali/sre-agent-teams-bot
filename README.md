@@ -1,110 +1,164 @@
 # SRE Agent Teams Bot
 
-A Microsoft Teams personal-chat bot that bridges users to the Azure SRE Agent
-data plane. Messages flow both ways, the agent's streaming narrative is rendered
-as Adaptive Cards, and write commands are approved in chat and executed under the
-signed-in user's identity through on-behalf-of (OBO) token exchange.
+A Microsoft Teams bridge for a **pre-existing Azure SRE Agent**. It keeps one
+SRE thread per Teams user, streams responses as Adaptive Cards, and runs
+approved writes under the signed-in user's identity. It does not create an SRE
+Agent or an empty tenant.
 
-```mermaid
-flowchart LR
-  user([Teams user])
-  subgraph M365[Microsoft 365]
-    teams[Teams personal chat]
-  end
-  subgraph AZ[Azure subscription]
-    botsvc[Azure Bot + Teams channel]
-    app[App Service B1 Always On<br/>Node bridge]
-    tbl[(Storage Table<br/>thread map)]
-    ai[Application Insights]
-    sre[Azure SRE Agent<br/>data plane]
-  end
-  token[Bot Framework<br/>token service]
+See [PREREQUISITES.md](PREREQUISITES.md), [AUTH.md](docs/AUTH.md), and
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) before deployment.
 
-  user <--> teams
-  teams <--> botsvc
-  botsvc <--> app
-  app -->|read/write thread map| tbl
-  app -->|telemetry| ai
-  app <-->|REST post + SignalR stream| sre
-  app -.->|sre-obo OAuth sign-in| token
+## Deploy
+
+Run these commands from the repository root in Windows PowerShell 5.1+. Set and
+verify the intended Azure tenant and bridge subscription explicitly:
+
+```powershell
+$TenantId = '<tenant-guid>'
+$SubscriptionId = '<bridge-subscription-guid>'
+$ResourceGroup = 'rg-sre-agent-teams-bridge'
+$AppName = '<globally-unique-app-name>'
+$StorageAccountName = '<globally-unique-storage-name>'
+$SreAgentSubscriptionId = '<sre-agent-subscription-guid>'
+$SreAgentResourceGroupName = '<sre-agent-resource-group>'
+$SreAgentName = '<existing-sre-agent-name>'
+$SreAgentEndpoint = 'https://<existing-sre-agent>.<region>.azuresre.ai'
+
+az login --tenant $TenantId
+az account set --subscription $SubscriptionId
+az account show --query '{subscription:id, tenant:tenantId, state:state}' --output json
 ```
 
-Read commands stream straight back as Adaptive Cards. Write commands surface an
-approval card and then execute as the signed-in user via two-phase OBO (see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the sequence diagrams).
+Confirm the returned tenant and subscription. The SRE Agent subscription may
+differ from `$SubscriptionId`, but it must be in `$TenantId`; cross-tenant role
+assignment is not supported.
 
-## What you get
+### 1. Configure the bot application
 
-- One continuous SRE Agent thread per Teams user, mapped in Azure Table Storage.
-- Streaming responses, progress, and final answer rendered as Adaptive Cards.
-- Two-phase OBO so approved write commands run with the user's permissions, never a standing service role.
-- Full IaC: Bicep and Terraform stand up everything on an empty tenant.
+Create/configure the app and write its newly created secret once to an
+ACL-restricted file. The command does not print the secret:
 
-See [docs/AUTH.md](docs/AUTH.md) for the auth and OBO model.
+```powershell
+$identity = .\scripts\bootstrap.ps1 -Phase appreg -TenantId $TenantId `
+  -SubscriptionId $SubscriptionId -DisplayName 'SRE Agent Teams Bridge' `
+  -CreateClientSecret -SecretOutputPath .\bot-secret.txt
+```
 
-## Prerequisites
+To configure an application that already exists, add `-BotAppId '<existing-app-guid>'`.
+Review `$identity.ConsentRequired`; if it is true, a qualified administrator
+must review and run `$identity.AdminConsentCommand` (or use
+`-GrantAdminConsent` during the app-registration phase). The app registration
+declares delegated `Threads.ReadWrite.All`; consent is a separate operation.
 
-An SRE Agent must already exist (the bridge connects to it, it does not create
-it). Full list in [PREREQUISITES.md](PREREQUISITES.md). You also need: an Azure
-subscription, the `az` CLI, Node 20, and either Bicep or Terraform.
+Read the secret into memory without echoing it, and remove the variable after
+the deployment steps that need it:
 
-## Quickstart
+```powershell
+$BotAppSecret = [System.IO.File]::ReadAllText('.\bot-secret.txt').Trim()
+```
 
-1. **Bot identity (bootstrap, phase 1)**
+### 2. Deploy infrastructure
 
-   ```powershell
-   ./scripts/bootstrap.ps1 -Phase appreg -DisplayName "SRE Agent Teams Bridge"
-   ```
+Create the bridge resource group, then supply every required Bicep parameter:
 
-   Note the `BOT_APP_ID` and `BOT_APP_SECRET` it prints.
+```powershell
+az group create --name $ResourceGroup --location centralus --subscription $SubscriptionId
+az deployment group create --resource-group $ResourceGroup --subscription $SubscriptionId `
+  --template-file infra/main.bicep `
+  --parameters appName=$AppName storageAccountName=$StorageAccountName `
+    botMicrosoftAppId=$identity.BotAppId botMicrosoftAppPassword=@bot-secret.txt `
+    sreAgentEndpoint=$SreAgentEndpoint sreAgentSubscriptionId=$SreAgentSubscriptionId `
+    sreAgentResourceGroupName=$SreAgentResourceGroupName sreAgentName=$SreAgentName
+```
 
-2. **Deploy infrastructure** with Bicep:
+The required Bicep values are `appName`, `storageAccountName`, bot ID/password,
+SRE Agent endpoint, and SRE Agent subscription/resource-group/name. Bicep
+assigns the App Service managed identity `SRE Agent Standard User` at that
+existing agent resource.
 
-   ```powershell
-   az group create -n rg-sre-agent-teams-bridge -l centralus
-   az deployment group create -g rg-sre-agent-teams-bridge -f infra/main.bicep `
-     -p appName=<unique-name> botMicrosoftAppId=<BOT_APP_ID> `
-        botMicrosoftAppPassword=<BOT_APP_SECRET> `
-        sreAgentEndpoint=https://<your-agent>.<region>.azuresre.ai
-   ```
+Alternatively use Terraform 1.5+. Copy
+`infra/terraform/terraform.tfvars.example` to `terraform.tfvars` and populate
+only its nonsecret values. Pass the secret ephemerally, not in tfvars:
 
-   or Terraform (copy `infra/terraform/terraform.tfvars.example` to
-   `terraform.tfvars`, fill it in):
+```powershell
+$env:TF_VAR_bot_app_secret = $BotAppSecret
+try { terraform -chdir=infra/terraform init; terraform -chdir=infra/terraform apply } finally { Remove-Item Env:TF_VAR_bot_app_secret -ErrorAction SilentlyContinue }
+```
 
-   ```powershell
-   cd infra/terraform; terraform init; terraform apply
-   ```
+Terraform necessarily records the bot secret in state. Use a secured remote
+backend with appropriate access controls for team or production use; no backend
+is configured by this repository. When finished, remove `$BotAppSecret` and
+securely handle/delete `bot-secret.txt` according to your secret-management
+policy.
 
-3. **OAuth connection (bootstrap, phase 2)** once the bot exists:
+### 3. Create or inspect the OAuth connection
 
-   ```powershell
-   ./scripts/bootstrap.ps1 -Phase oauth -ResourceGroup rg-sre-agent-teams-bridge `
-     -BotName <unique-name> -BotAppId <BOT_APP_ID> -BotAppSecret <BOT_APP_SECRET>
-   ```
+After the Bot exists, use the same in-memory secret only when creating or
+replacing its connection:
 
-4. **Grant the bridge access to the agent.** Assign `SRE Agent Standard User`
-   on the SRE Agent resource to the App Service managed identity (the Terraform
-   stack does this when `sre_agent_resource_id` is set; Bicep leaves it to this step).
+```powershell
+try {
+  .\scripts\bootstrap.ps1 -Phase oauth -TenantId $TenantId -SubscriptionId $SubscriptionId `
+    -ResourceGroup $ResourceGroup -BotName $AppName -BotAppId $identity.BotAppId `
+    -BotAppSecret $BotAppSecret
+} finally { Remove-Variable BotAppSecret -ErrorAction SilentlyContinue }
+```
 
-5. **Deploy app code**, then **upload the Teams package** built from
-   `appPackage/manifest.template.json` (replace `${...}` tokens) plus
-   `color.png` and `outline.png` via Teams > Apps > Manage your apps > Upload.
+The phase reads an existing `sre-obo` connection safely. A matching connection
+is left unchanged and does not need a secret. A mismatched connection fails
+unless you explicitly add `-ReplaceOAuthConnection`; creating or replacing one
+requires `-BotAppSecret`.
 
-## Configuration
+### 4. Deploy the application source
 
-Copy `.env.example` to `.env` for local runs; in Azure these are app settings.
+Use the source-only deployment command:
 
-| Setting | Purpose |
-| --- | --- |
-| `MicrosoftAppId` / `MicrosoftAppPassword` | Bot Entra app id + secret |
-| `MicrosoftAppType` / `MicrosoftAppTenantId` | `SingleTenant` + tenant id |
-| `SRE_AGENT_ENDPOINT` | SRE Agent data-plane base URL |
-| `SRE_AGENT_SCOPE` | Token scope, default `https://azuresre.dev/.default` |
-| `THREAD_TABLE_ENDPOINT` / `THREAD_TABLE_NAME` | Table mapping store |
-| `SRE_OAUTH_CONNECTION_NAME` | Bot OAuth connection, default `sre-obo` |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Telemetry |
+```powershell
+.\scripts\deploy.ps1 -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -AppName $AppName
+```
 
-## Local commands
+It builds an archive from tracked `src/`, `package.json`, `package-lock.json`,
+and `tsconfig.json` only. Do **not** add `dist/` or `node_modules/`; WSL is not
+needed. Linux App Service Oryx installs production dependencies and compiles the
+TypeScript source during remote deployment.
+
+### 5. Package and upload the Teams app
+
+Get the deployed hostname and supply a stable Teams app GUID and developer name:
+
+```powershell
+$AppServiceHostname = az webapp show --resource-group $ResourceGroup --name $AppName --subscription $SubscriptionId --query defaultHostName --output tsv
+.\scripts\package-teams.ps1 -BotMicrosoftAppId $identity.BotAppId `
+  -TeamsAppId '<teams-app-guid>' -AppServiceHostname $AppServiceHostname `
+  -DeveloperName '<developer-name>' -OutputPath .\appPackage\teams-app.zip
+```
+
+The package is deterministic for the same inputs and includes generated legal
+URLs: `https://<hostname>/privacy` and `https://<hostname>/terms` (and the app
+root as the default developer website). It verifies those endpoints by default.
+Upload `appPackage/teams-app.zip` in **Teams Developer Portal → Apps → Manage
+your apps → Import**. Sideloading must be enabled for the tenant.
+
+### 6. Validate
+
+Run the read-only deployment checks:
+
+```powershell
+$SreAgentResourceId = "/subscriptions/$SreAgentSubscriptionId/resourceGroups/$SreAgentResourceGroupName/providers/Microsoft.App/agents/$SreAgentName"
+.\scripts\validate-deployment.ps1 -TenantId $TenantId -SubscriptionId $SubscriptionId `
+  -ResourceGroup $ResourceGroup -AppName $AppName -SreAgentResourceId $SreAgentResourceId `
+  -StorageAccountName $StorageAccountName -TeamsPackagePath .\appPackage\teams-app.zip
+```
+
+The validator reads the agent subscription from `SreAgentResourceId`, verifies
+that it belongs to `$TenantId`, and checks the role assignment at that exact
+resource scope.
+
+## Local configuration
+
+Copy `.env.example` to `.env` for local runs. Azure uses the equivalent App
+Service settings. `SRE_AGENT_SCOPE` is the managed-identity `.default` scope;
+`SRE_OAUTH_CONNECTION_NAME` identifies the separate delegated OAuth connection.
 
 ```powershell
 npm install
@@ -112,31 +166,10 @@ npm run build
 npm test
 ```
 
-## Repository layout
+## Disclaimer and license
 
-- `src/` bridge (bot logic, SRE client, streaming, thread store)
-- `infra/main.bicep`, `infra/terraform/` two IaC stacks
-- `scripts/bootstrap.ps1` Entra app-reg + OAuth connection
-- `appPackage/manifest.template.json` Teams manifest template
-- `docs/` architecture and auth design
-
-## Disclaimer
-
-This project is an independent, community sample provided **"as is"**, without
-warranty of any kind (see [LICENSE](LICENSE)). It is **not supported software**:
-there is no SLA, and no commitment to maintenance, updates, or issue response.
-
-It is **not affiliated with, endorsed by, or a product of Microsoft**. "Azure",
-"Microsoft Teams", "Azure SRE Agent", and "Bot Framework" are trademarks of
-Microsoft, used here for identification only.
-
-Deploying this project **creates billable Azure resources** and **grants a bot
-the ability to execute control-plane actions** (including write operations such
-as deallocating or modifying resources) against your tenant. **You are solely
-responsible** for reviewing the code, the permissions you grant, the resources
-it deploys, the costs incurred, and any actions it performs. **Use at your own
-risk.**
-
-## License
-
-Released under the [MIT License](LICENSE).
+This independent community sample is provided **as is**, without warranty,
+support commitment, or SLA. It is not affiliated with or endorsed by Microsoft.
+Deploying it creates billable Azure resources and can enable users to perform
+approved control-plane actions. Review the code, identities, permissions, and
+costs before use. Released under the [MIT License](LICENSE).

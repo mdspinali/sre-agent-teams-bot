@@ -1,8 +1,7 @@
 data "azurerm_subscription" "current" {}
 
 locals {
-  storage_name = substr(replace(lower("${var.app_name}st"), "-", ""), 0, 24)
-  table_name   = "TeamsSreThreads"
+  table_name = "TeamsSreThreads"
 }
 
 resource "azurerm_resource_group" "rg" {
@@ -26,7 +25,7 @@ resource "azurerm_application_insights" "appi" {
 }
 
 resource "azurerm_storage_account" "storage" {
-  name                            = local.storage_name
+  name                            = var.storage_account_name
   resource_group_name             = azurerm_resource_group.rg.name
   location                        = azurerm_resource_group.rg.location
   account_tier                    = "Standard"
@@ -37,8 +36,8 @@ resource "azurerm_storage_account" "storage" {
 }
 
 resource "azurerm_storage_table" "threads" {
-  name                 = local.table_name
-  storage_account_name = azurerm_storage_account.storage.name
+  name               = local.table_name
+  storage_account_id = azurerm_storage_account.storage.id
 }
 
 resource "azurerm_linux_web_app" "app" {
@@ -86,6 +85,7 @@ resource "azurerm_role_assignment" "sre_standard_user" {
   scope                = var.sre_agent_resource_id
   role_definition_name = "SRE Agent Standard User"
   principal_id         = azurerm_linux_web_app.app.identity[0].principal_id
+  principal_type       = "ServicePrincipal"
 }
 
 resource "azurerm_bot_service_azure_bot" "bot" {

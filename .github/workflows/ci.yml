@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: hashicorp/setup-terraform@v3
+      - name: Install Bicep
+        shell: powershell
+        run: az bicep install
+      - name: Install dependencies
+        run: npm ci
+      - name: Build and test Node application
+        run: npm test
+      - name: Run tracked Windows PowerShell tests
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          $standaloneTests = @(git ls-files -- 'tests/*.test.ps1')
+          if ($standaloneTests.Count -eq 0) { throw 'No tracked standalone PowerShell tests were found.' }
+          foreach ($test in $standaloneTests) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $pesterTests = @(git ls-files -- 'tests/*.tests.ps1')
+          if ($pesterTests.Count -eq 0) { throw 'No tracked Pester test files were found.' }
+          Invoke-Pester -Path $pesterTests -EnableExit
+      - name: Build tracked Bicep templates
+        shell: powershell
+        run: |
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'bicep'
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          foreach ($template in @(git ls-files -- '*.bicep')) {
+            $output = Join-Path $outputDirectory (($template -replace '[\\/:]', '_') + '.json')
+            az bicep build --file $template --outfile $output
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Validate Terraform
+        working-directory: infra/terraform
+        shell: powershell
+        run: |
+          terraform fmt -check -recursive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          terraform init -backend=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          terraform validate
+      - name: Reject tracked ignored deployment artifacts
+        shell: powershell
+        run: |
+          $ignored = @(git ls-files -ci --exclude-standard)
+          if ($ignored.Count -gt 0) {
+            Write-Error "Tracked files matching .gitignore:`n$($ignored -join "`n")"
+            exit 1
+          }

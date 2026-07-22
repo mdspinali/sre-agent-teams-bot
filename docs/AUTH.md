@@ -1,40 +1,40 @@
-# Authentication and OBO
+# Authentication and authorization
 
-## Identities
+## Separate identities and scopes
 
-- **Bot Entra app (single-tenant):** authenticates the bot to the Bot Framework. App id + secret only.
-- **App Service managed identity:** Azure data-plane access. Holds `Storage Table Data Contributor` (table) and `SRE Agent Standard User` (agent). No secrets.
-- **End-user identity:** obtained through the bot OAuth connection `sre-obo` so write commands run as the user.
-
-## OAuth connection
-
-`sre-obo` is an Azure AD v2 connection on the Azure Bot, scope
-`https://azuresre.dev/.default`. The user signs in once; the bridge fetches the
-user token via `getUserToken` and uses it to authorize escalated commands.
-
-## Two-phase OBO write execution
-
-The SRE Agent gates write commands as an `azCliExecution`. Approving runs it
-twice:
-
-1. **First run, no OBO header.** Clears the gate; the command moves to `PendingAuthorization` and returns `requiredScopes`.
-2. **Second run with `x-sreagent-obo-scope: <requiredScopes>`.** The data plane exchanges the user token on the server side and executes under the user.
-
-This mirrors the portal's "Grant permissions" behavior. The bridge attaches the
-header only for `PendingAuthorization` (`src/teamsSreBot.ts` `authorizeAndRun`,
-`src/sreAgentClient.ts` `postExecutionActionObo`). After execution it runs a
-no-trigger turn to capture the agent's narrative for the outcome card.
-
-## Tradeoffs
-
-- **Interactive sign-in vs SSO.** SSO is smoother but its token-exchange token cannot be re-exchanged for OBO, so writes stall. Interactive auth-code sign-in yields a re-exchangeable token. We chose interactive.
-- **OBO vs standing role.** Granting the bridge a write role would skip OBO but break least-privilege and attribution. OBO keeps writes scoped to the approver: no access for the user means action denied.
-- **Public network vs private.** No VNet was provisioned, so table access uses public network + MI RBAC. A private endpoint would harden it at added cost.
-
-## Permissions summary
-
-| Principal | Role / scope | Why |
+| Identity | Configuration / permission | Purpose |
 | --- | --- | --- |
-| App MI | Storage Table Data Contributor | Key-less thread map reads/writes |
-| App MI | SRE Agent Standard User | Chat with agent, request actions |
-| End user | azuresre.dev via sre-obo | Execute approved writes as themselves |
+| Bot Entra application and service principal | Single-tenant app, `api://botid-<BotAppId>`, Bot Framework redirect URI, bot client secret | Authenticates the bot to Bot Framework and is the OAuth client. |
+| App Service managed identity | `Storage Table Data Contributor`; `SRE Agent Standard User`; `https://azuresre.dev/.default` | Keyless table access and application-to-SRE-Agent calls. `.default` is an application/managed-identity token scope, not the user OAuth scope. |
+| Teams user | `https://azuresre.dev/Threads.ReadWrite.All` through `sre-obo` | Authorizes an approved write as that user. |
+
+`scripts/bootstrap.ps1 -Phase appreg` creates or configures the single-tenant
+bot application. It creates/validates the bot service principal, configures the
+identifier URI and Bot Framework redirect URI, and declares the Azure SRE Agent
+delegated permission `Threads.ReadWrite.All`. Supplying `-BotAppId` configures
+that existing application instead of creating one.
+
+Declaring a delegated permission is not consent. The bootstrap result reports
+`ConsentRequired` and an `AdminConsentCommand` if no matching tenant-wide grant
+exists. A suitably privileged administrator can run that returned command, or
+run the app-registration phase with `-GrantAdminConsent`. Do not grant consent
+without reviewing the application and requested scope.
+
+## OAuth connection and OBO
+
+The `sre-obo` Azure AD v2 Bot OAuth connection uses the delegated scope
+`https://azuresre.dev/Threads.ReadWrite.All`, the bot app ID/secret, its tenant,
+and token-exchange URL `api://botid-<BotAppId>`. It is distinct from the App
+Service managed identity's `.default` scope.
+
+For a write, the bridge first clears the SRE Agent gate without an OBO header.
+When the agent returns `PendingAuthorization` and required scopes, the bridge
+runs the action again with `x-sreagent-obo-scope`; the service exchanges the
+interactive user token and executes as the approving user. The bridge therefore
+does not hold a standing write role for user actions.
+
+The OAuth bootstrap phase reads an existing connection first. If it already
+matches, it returns without changing it and no secret is required. If it is
+absent, or differs and is intentionally replaced with
+`-ReplaceOAuthConnection`, `-BotAppSecret` is required. The script never puts
+the secret in Azure CLI arguments and removes its temporary request body.

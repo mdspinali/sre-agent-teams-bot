@@ -5,9 +5,9 @@
   "id": "${TEAMS_APP_ID}",
   "developer": {
     "name": "${DEVELOPER_NAME}",
-    "websiteUrl": "https://example.com",
-    "privacyUrl": "https://example.com/privacy",
-    "termsOfUseUrl": "https://example.com/terms"
+    "websiteUrl": "${DEVELOPER_WEBSITE_URL}",
+    "privacyUrl": "${PRIVACY_URL}",
+    "termsOfUseUrl": "${TERMS_OF_USE_URL}"
   },
   "name": {
     "short": "SRE Agent",
@@ -15,7 +15,7 @@
   },
   "description": {
     "short": "Chat with Azure SRE Agent.",
-    "full": "Personal Teams chat surface for Azure SRE Agent through an Azure-hosted bot bridge."
+    "full": "Teams chat surface for Azure SRE Agent through an Azure-hosted bot bridge."
   },
   "icons": {
     "outline": "outline.png",

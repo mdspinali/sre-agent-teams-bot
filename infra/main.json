@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.44.1.10279",
-      "templateHash": "15442967972716833418"
+      "version": "0.45.15.27210",
+      "templateHash": "8322747570181071731"
     }
   },
   "parameters": {
@@ -15,8 +15,19 @@
     },
     "appName": {
       "type": "string",
+      "minLength": 4,
+      "maxLength": 40,
+      "metadata": {
+        "description": "Globally unique base name for the app and bot. Length is validated here; Azure validates the documented lowercase-alphanumeric-and-hyphen naming rules."
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
       "minLength": 3,
-      "maxLength": 40
+      "maxLength": 24,
+      "metadata": {
+        "description": "Globally unique Storage account name. Provide the same value to Terraform when switching deployment tools. Length is validated here; Azure validates lowercase letters and numbers."
+      }
     },
     "botDisplayName": {
       "type": "string",
@@ -34,13 +45,37 @@
     "sreAgentScope": {
       "type": "string",
       "defaultValue": "https://azuresre.dev/.default"
+    },
+    "sreAgentSubscriptionId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "metadata": {
+        "description": "Subscription GUID containing the existing SRE Agent. Length is validated here; ARM validates the GUID. Same-tenant cross-subscription deployment is supported; cross-tenant role assignment is not supported for the App Service managed identity."
+      }
+    },
+    "sreAgentResourceGroupName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 90,
+      "metadata": {
+        "description": "Resource group containing the existing SRE Agent. Length is validated here; ARM validates resource-group naming rules."
+      }
+    },
+    "sreAgentName": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32,
+      "metadata": {
+        "description": "Name of the existing SRE Agent. Length is validated here; Microsoft.App validates the documented naming rules."
+      }
     }
   },
   "variables": {
-    "storageName": "[take(replace(toLower(format('{0}st', parameters('appName'))), '-', ''), 24)]",
     "tableName": "TeamsSreThreads",
     "appServicePlanName": "[format('{0}-plan', parameters('appName'))]",
-    "appInsightsName": "[format('{0}-appi', parameters('appName'))]"
+    "appInsightsName": "[format('{0}-appi', parameters('appName'))]",
+    "sreAgentId": "[resourceId(parameters('sreAgentSubscriptionId'), parameters('sreAgentResourceGroupName'), 'Microsoft.App/agents', parameters('sreAgentName'))]"
   },
   "resources": [
     {
@@ -71,7 +106,7 @@
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
-      "name": "[variables('storageName')]",
+      "name": "[parameters('storageAccountName')]",
       "location": "[parameters('location')]",
       "sku": {
         "name": "Standard_LRS"
@@ -87,17 +122,17 @@
     {
       "type": "Microsoft.Storage/storageAccounts/tableServices",
       "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "name": "[format('{0}/{1}', parameters('storageAccountName'), 'default')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
       "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
       "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', variables('tableName'))]",
+      "name": "[format('{0}/{1}/{2}', parameters('storageAccountName'), 'default', variables('tableName'))]",
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', variables('storageName'), 'default')]"
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', parameters('storageAccountName'), 'default')]"
       ]
     },
     {
@@ -147,7 +182,7 @@
             },
             {
               "name": "THREAD_TABLE_ENDPOINT",
-              "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').primaryEndpoints.table]"
+              "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.table]"
             },
             {
               "name": "THREAD_TABLE_NAME",
@@ -167,14 +202,14 @@
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.Web/sites', parameters('appName')), 'Storage Table Data Contributor')]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.Web/sites', parameters('appName')), 'Storage Table Data Contributor')]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
         "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
@@ -182,7 +217,7 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.Web/sites', parameters('appName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
@@ -216,6 +251,66 @@
       "dependsOn": [
         "[resourceId('Microsoft.BotService/botServices', parameters('appName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('sre-agent-standard-user-{0}', uniqueString(variables('sreAgentId'), resourceId('Microsoft.Web/sites', parameters('appName'))))]",
+      "subscriptionId": "[parameters('sreAgentSubscriptionId')]",
+      "resourceGroup": "[parameters('sreAgentResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "agentName": {
+            "value": "[parameters('sreAgentName')]"
+          },
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.45.15.27210",
+              "templateHash": "2049345227436947760"
+            }
+          },
+          "parameters": {
+            "agentName": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 32
+            },
+            "principalId": {
+              "type": "string",
+              "minLength": 36,
+              "maxLength": 36
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.App/agents', parameters('agentName'))]",
+              "name": "[guid(resourceId('Microsoft.App/agents', parameters('agentName')), parameters('principalId'), 'SRE Agent Standard User')]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2d84a65a-63b2-4343-bbb6-31105d857bc1')]",
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ]
     }
   ],
   "outputs": {
@@ -223,17 +318,37 @@
       "type": "string",
       "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]"
     },
+    "appServiceHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName]"
+    },
+    "appServiceName": {
+      "type": "string",
+      "value": "[parameters('appName')]"
+    },
+    "botName": {
+      "type": "string",
+      "value": "[parameters('appName')]"
+    },
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[resourceGroup().name]"
+    },
     "botMessagingEndpoint": {
       "type": "string",
       "value": "[format('https://{0}/api/messages', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]"
     },
     "tableEndpoint": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-05-01').primaryEndpoints.table]"
+      "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.table]"
     },
     "appServicePrincipalId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]"
+    },
+    "sreAgentResourceId": {
+      "type": "string",
+      "value": "[variables('sreAgentId')]"
     }
   }
 }
