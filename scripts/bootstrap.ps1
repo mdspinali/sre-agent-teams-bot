@@ -159,17 +159,34 @@ if ($Phase -eq 'appreg') {
   if (-not (Test-Permission $app $srePrincipal.appId $scope[0].id)) {
     $null = Invoke-Az @('ad', 'app', 'permission', 'add', '--id', $BotAppId, '--api', $srePrincipal.appId, '--api-permissions', "$($scope[0].id)=Scope") 'declaring the SRE delegated permission'
   }
+  $app = Invoke-AzJson @('ad', 'app', 'show', '--id', $BotAppId, '-o', 'json') 'verifying the bot application'
+  if ([string] $app.signInAudience -cne 'AzureADMyOrg' -or @($app.identifierUris) -notcontains $identifierUri -or
+      @($app.web.redirectUris) -notcontains $redirectUri -or -not (Test-Permission $app $srePrincipal.appId $scope[0].id)) {
+    throw 'Bot application audience, identifier URI, redirect URI, or delegated permission verification failed.'
+  }
 
   $principals = @(Invoke-AzJson @('ad', 'sp', 'list', '--filter', "appId eq '$BotAppId'", '-o', 'json') 'reading the bot service principal')
   if ($principals.Count -eq 0) {
     $null = Invoke-AzJson @('ad', 'sp', 'create', '--id', $BotAppId, '-o', 'json') 'creating the bot service principal'
-    $principals = @(Invoke-AzJson @('ad', 'sp', 'list', '--filter', "appId eq '$BotAppId'", '-o', 'json') 'verifying the bot service principal')
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+      $principals = @(Invoke-AzJson @('ad', 'sp', 'list', '--filter', "appId eq '$BotAppId'", '-o', 'json') 'verifying the bot service principal')
+      if ($principals.Count -eq 1) { break }
+      if ($attempt -lt 6) { Start-Sleep -Seconds 2 }
+    }
   }
-  if ($principals.Count -ne 1 -or [string] $principals[0].appId -ine $BotAppId -or $principals[0].accountEnabled -eq $false) { throw 'Bot service-principal verification failed.' }
+  if ($principals.Count -ne 1 -or [string] $principals[0].appId -ine $BotAppId -or
+      [string] $principals[0].appOwnerOrganizationId -ine $TenantId -or $principals[0].accountEnabled -eq $false) {
+    throw 'Bot service-principal application, tenant, or enabled-state verification failed.'
+  }
 
   if ($GrantAdminConsent) {
     $null = Invoke-Az @('ad', 'app', 'permission', 'admin-consent', '--id', $BotAppId) 'granting admin consent'
   }
+  $grants = @(Invoke-AzJson @('ad', 'app', 'permission', 'list-grants', '--id', $BotAppId, '-o', 'json') 'checking delegated consent')
+  $consentGranted = @($grants | Where-Object {
+      [string] $_.resourceId -ieq [string] $srePrincipal.id -and @(([string] $_.scope) -split '\s+') -icontains $sreScopeName
+    }).Count -gt 0
+  if ($GrantAdminConsent -and -not $consentGranted) { throw 'Admin consent was not observable after the grant command.' }
   $secretPath = $null
   if ($CreateClientSecret) {
     if (-not $SecretOutputPath) { throw '-SecretOutputPath is required with -CreateClientSecret.' }
@@ -180,8 +197,8 @@ if ($Phase -eq 'appreg') {
   [pscustomobject]@{
     TenantId = $TenantId; SubscriptionId = $SubscriptionId; BotAppId = $BotAppId
     BotApplicationObjectId = [string] $app.id; BotServicePrincipalId = [string] $principals[0].id
-    SecretOutputPath = $secretPath; ConsentRequired = -not $GrantAdminConsent
-    AdminConsentCommand = if ($GrantAdminConsent) { $null } else { "az ad app permission admin-consent --id $BotAppId" }
+    SecretOutputPath = $secretPath; ConsentRequired = -not $consentGranted
+    AdminConsentCommand = if ($consentGranted) { $null } else { "az ad app permission admin-consent --id $BotAppId" }
   }
   return
 }

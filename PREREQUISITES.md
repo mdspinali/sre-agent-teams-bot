@@ -21,6 +21,19 @@ Entra tenant; cross-tenant deployment is not supported.
 - A Teams tenant where a Teams administrator permits custom-app upload
   (sideloading), and an account permitted to upload the package.
 
+Verify the installed tools before deployment:
+
+```powershell
+$PSVersionTable.PSVersion
+az version
+node --version
+terraform version  # Terraform path only
+az bicep install   # Bicep path only; safe to rerun
+az bicep version
+```
+
+Install missing tools from their signed vendor packages: [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows), [Node.js 20](https://nodejs.org/en/download), and [Terraform](https://developer.hashicorp.com/terraform/install).
+
 ## Select and verify the Azure context
 
 Set these values before running a script or IaC command. Do not rely on an
@@ -49,5 +62,9 @@ different subscription in the selected tenant.
 The generated Teams package has real HTTPS policy URLs at the deployed app's
 `/privacy` and `/terms` routes. Do not package or upload the app until those
 routes are reachable.
+
+Terraform deployments require an existing Azure Storage backend with blob
+versioning and Microsoft Entra authorization. The state contains the bot secret;
+grant backend access only to deployment operators and automation identities.
 
 Useful references: [SRE Agent prerequisites](https://learn.microsoft.com/en-us/azure/sre-agent/usage#prerequisites), [Azure Bot](https://learn.microsoft.com/en-us/azure/bot-service/abs-quickstart?view=azure-bot-service-4.0), and [Teams custom-app upload](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).

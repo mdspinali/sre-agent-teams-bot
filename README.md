@@ -24,6 +24,12 @@ $SreAgentResourceGroupName = '<sre-agent-resource-group>'
 $SreAgentName = '<existing-sre-agent-name>'
 $SreAgentEndpoint = 'https://<existing-sre-agent>.<region>.azuresre.ai'
 
+$PSVersionTable.PSVersion
+az version
+node --version
+terraform version       # Terraform path only
+az bicep version        # Bicep path only
+
 az login --tenant $TenantId
 az account set --subscription $SubscriptionId
 az account show --query '{subscription:id, tenant:tenantId, state:state}' --output json
@@ -78,16 +84,27 @@ existing agent resource.
 
 Alternatively use Terraform 1.5+. Copy
 `infra/terraform/terraform.tfvars.example` to `terraform.tfvars` and populate
-only its nonsecret values. Pass the secret ephemerally, not in tfvars:
+only its nonsecret values. Configure an existing encrypted Azure Storage backend
+and pass the secret ephemerally, not in tfvars:
 
 ```powershell
+$Backend = @(
+  "resource_group_name=$TfStateResourceGroup",
+  "storage_account_name=$TfStateStorageAccount",
+  "container_name=$TfStateContainer",
+  "key=sre-agent-teams-bridge.tfstate",
+  "use_azuread_auth=true"
+)
 $env:TF_VAR_bot_app_secret = $BotAppSecret
-try { terraform -chdir=infra/terraform init; terraform -chdir=infra/terraform apply } finally { Remove-Item Env:TF_VAR_bot_app_secret -ErrorAction SilentlyContinue }
+try {
+  $BackendArgs = @($Backend | ForEach-Object { "-backend-config=$_" })
+  terraform -chdir=infra/terraform init $BackendArgs
+  terraform -chdir=infra/terraform apply
+} finally { Remove-Item Env:TF_VAR_bot_app_secret -ErrorAction SilentlyContinue }
 ```
 
 Terraform necessarily records the bot secret in state. Use a secured remote
-backend with appropriate access controls for team or production use; no backend
-is configured by this repository. When finished, remove `$BotAppSecret` and
+backend with blob versioning and least-privilege access. When finished, remove `$BotAppSecret` and
 securely handle/delete `bot-secret.txt` according to your secret-management
 policy.
 
@@ -119,7 +136,7 @@ Use the source-only deployment command:
 
 It builds an archive from tracked `src/`, `package.json`, `package-lock.json`,
 and `tsconfig.json` only. Do **not** add `dist/` or `node_modules/`; WSL is not
-needed. Linux App Service Oryx installs production dependencies and compiles the
+needed. Git creates the portable ZIP; Linux App Service Oryx installs dependencies and compiles the
 TypeScript source during remote deployment.
 
 ### 5. Package and upload the Teams app
