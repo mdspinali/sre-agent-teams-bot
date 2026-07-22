@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
     "dev": "tsx src/index.ts",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run build && node --test dist/tests/keys.test.js dist/tests/sreAgentClient.test.js dist/tests/sreAgentStream.test.js dist/tests/teamsSreBot.test.js"
   },
   "dependencies": {
     "@azure/data-tables": "^13.3.0",

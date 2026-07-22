@@ -1,29 +1,53 @@
-# Prerequisites: Azure SRE Agent to Teams bridge
+# Prerequisites
 
-Setup has three parts: the **Bot Service**, the **hosted app** (App Service + Storage + RBAC), and the **Teams custom app**. Each prerequisite links to the Microsoft Learn doc it comes from.
+This repository deploys a Teams bridge **to an existing Azure SRE Agent**. It
+does not create an SRE Agent or an empty tenant. The bridge and the SRE Agent
+may use different Azure subscriptions only when both are in the same Microsoft
+Entra tenant; cross-tenant deployment is not supported.
 
-## Part 0: Foundation
+## Workstation and access
 
-- Active Azure subscription in your tenant.
-- An **SRE Agent already created**. Creating one needs your user account to hold `Microsoft.Authorization/roleAssignments/write` (**RBAC Administrator** or **User Access Administrator**), and `*.azuresre.ai` allow-listed on your firewall. See [Create and use an agent › Prerequisites](https://learn.microsoft.com/en-us/azure/sre-agent/usage#prerequisites) and the [SRE Agent overview](https://learn.microsoft.com/en-us/azure/sre-agent/overview).
+- Windows PowerShell **5.1 or later**, Azure CLI **2.87.0 or later**, and Node
+  **20**. Use either Bicep or Terraform **1.5 or later**.
+- An enabled Azure subscription for the bridge resources, and the subscription,
+  resource group, name, and HTTPS endpoint of the pre-existing SRE Agent.
+- Permission to create/read/update the bot Entra application and service
+  principal, declare its delegated permission, and obtain tenant admin consent
+  when required. See [AUTH.md](docs/AUTH.md).
+- Azure permissions to create the resource group/resources and assign `Storage
+  Table Data Contributor` and `SRE Agent Standard User`. For a cross-subscription
+  SRE Agent, the deployer needs the applicable role-assignment permission in its
+  subscription as well as the bridge subscription.
+- A Teams tenant where a Teams administrator permits custom-app upload
+  (sideloading), and an account permitted to upload the package.
 
-## Part 1: Bot Service
+## Select and verify the Azure context
 
-- **Entra app registration (single-tenant).** Produces the bot identity: `MicrosoftAppId` + a client secret. Choose *"Single tenant only"*. See [Register an app in Microsoft Entra ID](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app).
-- **Azure Bot resource.** App type must be **single-tenant** or **user-assigned managed identity**. Multi-tenant creation was deprecated July 31, 2025. Point its messaging endpoint at `https://<app>/api/messages`. See [Create an Azure Bot resource](https://learn.microsoft.com/en-us/azure/bot-service/abs-quickstart?view=azure-bot-service-4.0).
-- **Microsoft Teams channel.** On the Azure Bot, add **Channels → Microsoft Teams**. See [Connect a bot to Microsoft Teams](https://learn.microsoft.com/en-us/azure/bot-service/channel-connect-teams?view=azure-bot-service-4.0).
+Set these values before running a script or IaC command. Do not rely on an
+ambient Azure CLI context:
 
-## Part 2: Hosted app (App Service + Storage + RBAC)
+```powershell
+$TenantId = '<tenant-guid>'
+$SubscriptionId = '<bridge-subscription-guid>'
+az login --tenant $TenantId
+az account set --subscription $SubscriptionId
+az account show --query '{subscription:id, tenant:tenantId, state:state}' --output json
+```
 
-- **App Service (Linux, Node 20)** hosting the relay and exposing `/api/messages`. Must be **B1 or higher with Always On** so it doesn't idle-unload and drop the first Teams message. See [Managed identities for App Service](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity).
-- **System-assigned managed identity** on that App Service. This is the app's single Azure identity (`DefaultAzureCredential`), no secrets to rotate. Same doc: [Managed identities for App Service](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity).
-- **Storage account with a Table** (`TeamsSreThreads`) storing the Teams-conversation → SRE-Agent-thread mapping, so each user keeps one continuous thread.
-- **RBAC: `Storage Table Data Contributor`** on that storage account, assigned to the App Service managed identity (role id `0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3`). This gives key-less table access. See [Assign an Azure role for storage data access](https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access) and the [built-in roles list](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles).
-- **App settings:** `MicrosoftAppId`, `MicrosoftAppPassword`, `MicrosoftAppType=SingleTenant`, `MicrosoftAppTenantId`, `SRE_AGENT_ENDPOINT`, `SRE_AGENT_SCOPE=https://azuresre.dev/.default`, `THREAD_TABLE_ENDPOINT`, `THREAD_TABLE_NAME`, `APPLICATIONINSIGHTS_CONNECTION_STRING`.
-- **RBAC: `SRE Agent Standard User`** on the SRE Agent resource (`Microsoft.App/agents/<agent>`), assigned to the App Service managed identity. This authorizes the bridge to chat with the agent and request actions (token scope `https://azuresre.dev/.default`). See [User roles and permissions in Azure SRE Agent](https://learn.microsoft.com/en-us/azure/sre-agent/user-roles). Note: this assignment is applied directly to the agent today and is not yet in `infra/main.bicep`.
+Confirm that the returned subscription and tenant equal `$SubscriptionId` and
+`$TenantId`, and that the subscription is enabled. The bootstrap and deployment
+scripts repeat this validation before making their changes.
 
-## Part 3: Teams custom app
+## Azure resources and Teams
 
-- **Microsoft 365 tenant with Teams** on a qualifying plan (Business, E1/E3/E5, Developer, or Education). See [Prepare your Microsoft 365 tenant](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/build-and-test/prepare-your-o365-tenant).
-- **Custom app upload (sideloading) enabled** by a Teams Administrator: Teams admin center → Teams apps → Setup policies → *Upload custom apps = On*. Not available in GCC High, DoD, or 21Vianet. See [Enable custom app upload](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/build-and-test/prepare-your-o365-tenant#enable-custom-teams-apps-and-configure-custom-app-upload-settings).
-- **Teams app package** (manifest + icons) referencing the bot's `MicrosoftAppId`, built in the [Teams Developer Portal](https://dev.teams.microsoft.com/), then uploaded via Teams → Apps → Manage your apps → Upload a custom app. The app must already be running over HTTPS. See [Upload your custom app](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).
+The IaC provisions a Linux B1 App Service (Node 20, Always On), Azure Bot with
+the Teams channel, Storage Table, Application Insights, and a system-assigned
+managed identity. It assigns the identity `Storage Table Data Contributor` and
+`SRE Agent Standard User`. The latter can target an existing SRE Agent in a
+different subscription in the selected tenant.
+
+The generated Teams package has real HTTPS policy URLs at the deployed app's
+`/privacy` and `/terms` routes. Do not package or upload the app until those
+routes are reachable.
+
+Useful references: [SRE Agent prerequisites](https://learn.microsoft.com/en-us/azure/sre-agent/usage#prerequisites), [Azure Bot](https://learn.microsoft.com/en-us/azure/bot-service/abs-quickstart?view=azure-bot-service-4.0), and [Teams custom-app upload](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).

@@ -1,69 +1,54 @@
 # Architecture
 
-## Components
-
 ```mermaid
 flowchart LR
-  user[Teams user] --> teams[Teams personal chat]
-  teams --> botsvc[Azure Bot + Teams channel]
-  botsvc --> app[App Service B1 Always On Node bridge]
-  app -->|thread map| tbl[(Storage Table)]
-  app -->|telemetry| ai[Application Insights]
-  app -->|REST + SignalR| sre[Azure SRE Agent data plane]
-  app -.->|OAuth sre-obo| token[Bot Framework token service]
-  mi[App managed identity] -->|Storage Table Data Contributor| tbl
+  user[Teams user] --> teams[Teams custom app]
+  teams --> bot[Azure Bot + Teams channel]
+  bot --> app[Linux App Service: Node bridge]
+  app --> table[(Storage Table)]
+  app --> insights[Application Insights]
+  app --> sre[Pre-existing Azure SRE Agent]
+  app -. interactive user token .-> token[Bot Framework OAuth: sre-obo]
+  mi[App Service managed identity] -->|Storage Table Data Contributor| table
   mi -->|SRE Agent Standard User| sre
 ```
 
-The bridge is stateless except for the Teams-conversation to SRE-thread map kept
-in Table Storage, so each user keeps one continuous agent thread. The bridge
-identity is a system-assigned managed identity: no secrets to rotate for Azure
-data access. Bot-to-channel auth uses the single-tenant Entra app id + secret.
+The bridge is deployed into a selected subscription; it does not provision the
+SRE Agent. The existing SRE Agent can be in another subscription in the same
+Entra tenant. The App Service managed identity is granted access to its exact
+agent resource, so a cross-tenant SRE Agent is unsupported.
 
-## Message flow
+The bridge persists the Teams-user-to-SRE-thread mapping in `TeamsSreThreads`.
+It uses its managed identity and `https://azuresre.dev/.default` for normal
+SRE-Agent and storage access. Bot Framework authentication uses the separate
+single-tenant bot application and client secret.
 
-```mermaid
-sequenceDiagram
-  participant U as User (Teams)
-  participant B as Bridge
-  participant S as SRE Agent
-  U->>B: message
-  B->>S: post message to thread (REST)
-  B->>S: open SignalR stream
-  S-->>B: reasoning + progress deltas
-  S-->>B: final answer + SignalProcessingComplete
-  B-->>U: Adaptive Cards (live-edited progress, then answer)
-```
-
-## Two-phase OBO approval
-
-Read commands run directly. Write commands are gated; the bridge surfaces an
-approval card, then runs the command as the user via two REST runs.
+## Write approval flow
 
 ```mermaid
 sequenceDiagram
-  participant U as User
+  participant U as Teams user
   participant B as Bridge
   participant S as SRE Agent
-  S-->>B: azCliExecution status Pending (write)
+  S-->>B: gated write command
   B-->>U: approval card
-  U->>B: Approve
-  B->>S: run (no obo header) -> clears gate
-  S-->>B: status PendingAuthorization + requiredScopes
-  B->>S: run with x-sreagent-obo-scope = requiredScopes
-  S-->>B: executes as user, status Completed
-  B->>S: capture narrative (no-trigger turn)
-  B-->>U: outcome card + agent narrative
+  U->>B: approve
+  B->>S: run without OBO header
+  S-->>B: PendingAuthorization + required scopes
+  B->>S: run with x-sreagent-obo-scope
+  S-->>B: execute as approving user
+  B-->>U: outcome and narrative card
 ```
 
-## Design decisions
+The interactive `sre-obo` connection requests delegated
+`Threads.ReadWrite.All`; it is not the managed identity `.default` scope. This
+keeps approved writes attributable to the user rather than granting the bridge a
+standing write role. See [AUTH.md](AUTH.md).
 
-Non-obvious choices where a viable alternative was rejected, and why.
+## Deployment shape
 
-- **SRE Agent is a parameter, not provisioned.** Alternative: provision it in IaC. Rejected because creating an agent needs RBAC-admin rights on the target sub and is a one-time act, while the bridge is redeployable; coupling them would force every bridge deploy to hold elevated rights.
-- **B1 + Always On, not Free tier.** Alternative: F1 Free. Rejected because Free idle-unloads the container and the first Teams message after a cold start is dropped (no `/api/messages` handler loaded yet), and the F1 daily CPU quota stops the app outright.
-- **Storage public network Enabled + managed-identity (key-less).** Alternative: private endpoint / VNet, or shared-key access. Rejected: no VNet is provisioned, so with public access off the MI table reads return 403 AuthorizationFailure; shared keys would reintroduce a secret to rotate.
-- **Interactive sign-in, not Teams SSO.** Alternative: SSO token exchange. Rejected because an SSO-exchanged token cannot be re-exchanged for OBO, so write commands stall at PendingAuthorization; an auth-code (interactive) token can be re-exchanged. See AUTH.md.
-- **Render replies as Adaptive Cards, not plain text.** Alternative: post the agent text as-is. Rejected because plain Teams text drops content the SRE portal shows: the agent's post-action narrative, the command title, who approved it (OBO attribution), and start/complete timestamps. Cards recover those, so Teams matches the portal instead of losing detail. Cards target schema 1.4; 1.5 Badge renders unreliably in Teams, so risk is shown as text, not a badge.
-- **One SRE thread per Teams user.** Alternative: a new thread per message. Rejected because the agent keeps context within a thread; a fresh thread per message loses prior turns. The user-to-thread map lives in Table Storage.
-- **No standing write role on the bridge.** Alternative: grant the bridge identity a write role and skip OBO. Rejected because it breaks least-privilege and attribution: writes must run as the approving user, so if the user lacks access the action is denied. The bridge holds only Standard User.
+Bicep and Terraform both create the App Service, Bot/Teams channel, Storage,
+Application Insights, and role assignments. The deployment script uploads only
+tracked TypeScript source and build metadata. App Service Oryx performs the
+Linux dependency installation and TypeScript build remotely; local `dist/`,
+`node_modules/`, and WSL are not deployment prerequisites.

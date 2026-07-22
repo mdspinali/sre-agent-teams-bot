@@ -1,18 +1,37 @@
+targetScope = 'resourceGroup'
+
 param location string = 'centralus'
-@minLength(3)
+@description('Globally unique base name for the app and bot. Length is validated here; Azure validates the documented lowercase-alphanumeric-and-hyphen naming rules.')
+@minLength(4)
 @maxLength(40)
 param appName string
+@description('Globally unique Storage account name. Provide the same value to Terraform when switching deployment tools. Length is validated here; Azure validates lowercase letters and numbers.')
+@minLength(3)
+@maxLength(24)
+param storageAccountName string
 param botDisplayName string = 'SRE Agent Teams Bridge'
 param botMicrosoftAppId string
 @secure()
 param botMicrosoftAppPassword string
 param sreAgentEndpoint string
 param sreAgentScope string = 'https://azuresre.dev/.default'
+@description('Subscription GUID containing the existing SRE Agent. Length is validated here; ARM validates the GUID. Same-tenant cross-subscription deployment is supported; cross-tenant role assignment is not supported for the App Service managed identity.')
+@minLength(36)
+@maxLength(36)
+param sreAgentSubscriptionId string
+@description('Resource group containing the existing SRE Agent. Length is validated here; ARM validates resource-group naming rules.')
+@minLength(1)
+@maxLength(90)
+param sreAgentResourceGroupName string
+@description('Name of the existing SRE Agent. Length is validated here; Microsoft.App validates the documented naming rules.')
+@minLength(2)
+@maxLength(32)
+param sreAgentName string
 
-var storageName = take(replace(toLower('${appName}st'), '-', ''), 24)
 var tableName = 'TeamsSreThreads'
 var appServicePlanName = '${appName}-plan'
 var appInsightsName = '${appName}-appi'
+var sreAgentId = resourceId(sreAgentSubscriptionId, sreAgentResourceGroupName, 'Microsoft.App/agents', sreAgentName)
 
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: appServicePlanName
@@ -38,7 +57,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: storageName
+  name: storageAccountName
   location: location
   sku: {
     name: 'Standard_LRS'
@@ -126,9 +145,6 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-// SRE Agent Standard User role is assigned by scripts/bootstrap.ps1 because the
-// agent may live in a different subscription/resource group; cross-scope role
-// assignment is handled outside this template.
 resource storageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storage.id, app.id, 'Storage Table Data Contributor')
   scope: storage
@@ -136,6 +152,15 @@ resource storageTableContributor 'Microsoft.Authorization/roleAssignments@2022-0
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
     principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+module sreAgentStandardUser './modules/sre-agent-role-assignment.bicep' = {
+  name: 'sre-agent-standard-user-${uniqueString(sreAgentId, app.id)}'
+  scope: resourceGroup(sreAgentSubscriptionId, sreAgentResourceGroupName)
+  params: {
+    agentName: sreAgentName
+    principalId: app.identity.principalId
   }
 }
 
@@ -165,6 +190,11 @@ resource teamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = {
 }
 
 output appServiceUrl string = 'https://${app.properties.defaultHostName}'
+output appServiceHostname string = app.properties.defaultHostName
+output appServiceName string = app.name
+output botName string = bot.name
+output resourceGroupName string = resourceGroup().name
 output botMessagingEndpoint string = 'https://${app.properties.defaultHostName}/api/messages'
 output tableEndpoint string = storage.properties.primaryEndpoints.table
 output appServicePrincipalId string = app.identity.principalId
+output sreAgentResourceId string = sreAgentId

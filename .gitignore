@@ -8,6 +8,7 @@ deploy/
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
 terraform.tfvars
 
 # Local/personal artifacts (never tracked)
