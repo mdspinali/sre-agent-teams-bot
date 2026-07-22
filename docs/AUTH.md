@@ -37,4 +37,5 @@ The OAuth bootstrap phase reads an existing connection first. If it already
 matches, it returns without changing it and no secret is required. If it is
 absent, or differs and is intentionally replaced with
 `-ReplaceOAuthConnection`, `-BotAppSecret` is required. The script never puts
-the secret in Azure CLI arguments and removes its temporary request body.
+the secret through `cmd.exe`; on Windows it invokes the Azure CLI Python entry
+point directly so secrets containing shell metacharacters are preserved.

@@ -191,9 +191,8 @@ foreach ($name in @('ResourceGroup', 'BotName', 'BotAppId')) {
 }
 $group = Invoke-AzJson @('group', 'show', '--name', $ResourceGroup, '--subscription', $SubscriptionId, '-o', 'json') 'reading the resource group'
 $bot = Invoke-AzJson @('bot', 'show', '-g', $ResourceGroup, '-n', $BotName, '--subscription', $SubscriptionId, '-o', 'json') 'reading the Azure Bot'
-$app = Invoke-AzJson @('ad', 'app', 'show', '--id', $BotAppId, '-o', 'json') 'reading the OAuth application'
-if (-not $group.id -or [string] $bot.properties.msaAppId -ine $BotAppId -or [string] $bot.properties.msaAppTenantId -ine $TenantId -or [string] $app.appId -ine $BotAppId) {
-  throw 'The resource group, bot, application, and tenant association do not match.'
+if (-not $group.id -or [string] $bot.properties.msaAppId -ine $BotAppId -or [string] $bot.properties.msaAppTenantId -ine $TenantId) {
+  throw 'The resource group, bot application, and tenant association do not match.'
 }
 
 $provider = Get-Provider
